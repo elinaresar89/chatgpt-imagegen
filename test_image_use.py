@@ -4704,7 +4704,8 @@ const results = input.cases.map(([pathname, cfg]) => {
     })),
   };
   const location = {pathname, origin: cfg.origin || 'https://chatgpt.com'};
-  const armed = JSON.parse(eval(input.script));
+  const armed = JSON.parse(require('vm').runInNewContext(input.script,
+    {window, document, location, setTimeout, clearTimeout}, {timeout: 1000}));
   if (armed.ok) {
     if (cfg.latePath) location.pathname = cfg.latePath;
     if (cfg.lateText) composer.value = cfg.lateText;
