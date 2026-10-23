@@ -2725,8 +2725,9 @@ _UPLOAD_SELECTORS = ("#upload-files",
 def _upload_references(ab, session, ref_paths, remaining, emit) -> None:
     """Attach reference image files to the composer via `chrome-use upload`.
 
-    Fall back only when a selector is definitely missing. After a possibly
-    dispatched upload, observe completion instead of uploading the batch again.
+    Fall back only when a selector is missing or explicitly refused as ambiguous
+    before dispatch with an empty, idle composer. After a possibly dispatched
+    upload, observe completion instead of uploading the batch again.
     Every requested image must finish uploading before the prompt can be sent.
     """
     if not ref_paths:
@@ -2747,7 +2748,15 @@ def _upload_references(ab, session, ref_paths, remaining, emit) -> None:
             state = _web_composer_state(ab, session, remaining)
             missing = any(marker in str(e).lower() for marker in
                           ("not found", "no element matches", "matched 0"))
-            if not state.get("attachments") and missing:
+            # chrome-use's explicit ambiguity refusal happens before dispatch.
+            # Do not infer this from generic "multiple elements" prose: unknown
+            # errors can arrive after an upload has already started.
+            ambiguous = ("selector_ambiguous:" in str(e).lower()
+                         and state.get("attachments") == 0
+                         and state.get("ready") == 0
+                         and state.get("busy") is False
+                         and state.get("text") == "")
+            if (not state.get("attachments") and missing) or ambiguous:
                 if sel == _UPLOAD_SELECTORS[-1]:
                     raise
                 continue

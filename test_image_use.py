@@ -2881,6 +2881,61 @@ class UploadReferences(unittest.TestCase):
         ab.assert_called_once_with("ab", "upload", "#upload-files", *refs,
                                    session="s", timeout=90.0)
 
+    def test_ambiguous_selector_falls_back_before_upload(self):
+        """A pre-dispatch refusal may advance to the next unique selector."""
+        error = cig.GatewayError(
+            "chrome-use upload failed (exit 1): selector_ambiguous: "
+            "`#upload-files` matches 2 elements, so nothing was done")
+        with unittest.mock.patch.object(cig, "_web_composer_state", side_effect=[
+                 _composer_state(), _composer_state(), _composer_state(attachments=1)]), \
+             unittest.mock.patch.object(cig, "_ab", side_effect=[error, ""]) as ab:
+            cig._upload_references("ab", "s", ["/ref.png"], lambda: 90, lambda _: None)
+        self.assertEqual([call.args[2] for call in ab.call_args_list],
+                         list(cig._UPLOAD_SELECTORS[:2]))
+
+    def test_ambiguous_selector_does_not_retry_a_changed_or_unverified_composer(self):
+        """Zero thumbnails alone do not prove the composer is safe to retry."""
+        for state in (_composer_state(busy=True), _composer_state("new draft"),
+                      _composer_state(ready=1), _composer_state(busy=None),
+                      _composer_state(attachments=None)):
+            with self.subTest(state=state), \
+                 unittest.mock.patch.object(cig, "_web_composer_state", side_effect=[
+                     _composer_state(), state]), \
+                 unittest.mock.patch.object(cig, "_ab", side_effect=cig.GatewayError(
+                     "selector_ambiguous: matches 2 elements, so nothing was done")) as ab:
+                with self.assertRaisesRegex(cig.GatewayError, "outcome is uncertain"):
+                    cig._upload_references("ab", "s", ["/ref.png"], lambda: 90, lambda _: None)
+                ab.assert_called_once()
+
+    def test_ambiguity_wording_without_the_refusal_marker_is_not_replayed(self):
+        """Generic errors cannot establish that the upload was never dispatched."""
+        with unittest.mock.patch.object(cig, "_web_composer_state", return_value=_composer_state()), \
+             unittest.mock.patch.object(cig, "_ab", side_effect=cig.GatewayError(
+                 "selector matched 2 elements; upload outcome unknown")) as ab:
+            with self.assertRaisesRegex(cig.GatewayError, "outcome is uncertain"):
+                cig._upload_references("ab", "s", ["/ref.png"], lambda: 90, lambda _: None)
+        ab.assert_called_once()
+
+    def test_ambiguous_error_with_attachments_observes_without_reuploading(self):
+        """A refusal must not trigger another upload once attachments appear."""
+        with unittest.mock.patch.object(cig, "_web_composer_state", side_effect=[
+                 _composer_state(), _composer_state(attachments=1),
+                 _composer_state(attachments=1)]), \
+             unittest.mock.patch.object(cig, "_ab", side_effect=cig.GatewayError(
+                 "selector_ambiguous: matches 2 elements, so nothing was done")) as ab:
+            cig._upload_references("ab", "s", ["/ref.png"], lambda: 90, lambda _: None)
+        ab.assert_called_once()
+
+    def test_all_ambiguous_selectors_stop_at_the_last_refusal(self):
+        """An entirely ambiguous layout terminates without repeating selectors."""
+        with unittest.mock.patch.object(cig, "_web_composer_state", return_value=_composer_state()), \
+             unittest.mock.patch.object(cig, "_ab", side_effect=cig.GatewayError(
+                 "selector_ambiguous: matches 2 elements, so nothing was done")) as ab:
+            with self.assertRaisesRegex(cig.GatewayError, "selector_ambiguous"):
+                cig._upload_references("ab", "s", ["/ref.png"], lambda: 90, lambda _: None)
+        self.assertEqual([call.args[2] for call in ab.call_args_list],
+                         list(cig._UPLOAD_SELECTORS))
+
     def test_partial_or_unconfirmed_upload_never_proceeds(self):
         """Reject batches with missing thumbnails or unfinished server uploads."""
         for state in (_composer_state(), _composer_state(attachments=1),
